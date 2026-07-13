@@ -5,3 +5,5 @@ pydantic
 langgraph
 langchain-groq
 langchain-core
+python-dotenv
+psycopg2-binary

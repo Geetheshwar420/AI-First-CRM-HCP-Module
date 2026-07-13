@@ -15,7 +15,20 @@ from database import engine, get_db
 # Create all database tables
 models.Base.metadata.create_all(bind=engine)
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="AI-First CRM HCP Module")
+
+# Parse FRONTEND_URL to allow multiple origins if comma-separated
+frontend_origins = os.environ.get("FRONTEND_URL", "http://localhost:3000").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=frontend_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.post("/api/interactions", response_model=schemas.Interaction)
 def create_interaction(interaction: schemas.InteractionCreate, db: Session = Depends(get_db)):

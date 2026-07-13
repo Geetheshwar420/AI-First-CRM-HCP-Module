@@ -3,6 +3,7 @@ from typing import Optional, List
 
 class InteractionBase(BaseModel):
     hcp_id: Optional[int] = None
+    hcp_name: Optional[str] = None
     interaction_type: Optional[str] = None
     date: Optional[str] = None
     time: Optional[str] = None

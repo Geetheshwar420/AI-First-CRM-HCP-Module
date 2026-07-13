@@ -1,5 +1,6 @@
 import os
 import json
+import schemas
 from typing import TypedDict, Annotated, List, Dict, Any
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_groq import ChatGroq
@@ -7,12 +8,14 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
 
+from langgraph.graph.message import add_messages
+
 # Load environment variable explicitly or let LangChain handle it if GROQ_API_KEY is in env
 groq_api_key = os.environ.get("GROQ_API_KEY", "")
 
 # Define State
 class AgentState(TypedDict):
-    messages: Annotated[list, "The messages in the conversation"]
+    messages: Annotated[list, add_messages]
     current_form_state: dict
     missing_fields: list
     suggested_follow_ups: list
@@ -53,9 +56,13 @@ def generate_follow_up_suggestions(conversation_summary: str) -> list:
 tools = [log_interaction, edit_interaction, fetch_hcp_profile, check_compliance_limits, generate_follow_up_suggestions]
 
 def create_agent():
-    # Target model: gemma2-9b-it, fallback: llama-3.3-70b-versatile
+    # Validate GROQ_API_KEY
+    if not os.environ.get("GROQ_API_KEY"):
+        raise ValueError("GROQ_API_KEY environment variable is missing. Please configure it.")
+        
+    # Target model: llama-3.1-8b-instant, fallback: llama-3.3-70b-versatile
     try:
-        llm = ChatGroq(model="gemma2-9b-it", temperature=0)
+        llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
     except Exception:
         llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
         
@@ -64,13 +71,7 @@ def create_agent():
     def chatbot(state: AgentState):
         messages = state["messages"]
         response = llm_with_tools.invoke(messages)
-        
-        # Simple extraction logic (in a real app we'd use structured output)
-        # Here we attempt to map tool calls to state updates
-        new_state = {**state}
-        new_state["messages"] = messages + [response]
-        
-        return new_state
+        return {"messages": [response]}
 
     # Tool execution node
     tool_node = ToolNode(tools)
@@ -79,32 +80,65 @@ def create_agent():
     def should_continue(state: AgentState):
         messages = state["messages"]
         last_message = messages[-1]
+        
+        # Safeguard: if there are more than 6 messages, force an end to prevent infinite loops (API cost saving)
+        if len(messages) > 6:
+            return END
+            
         if last_message.tool_calls:
             return "tools"
         return END
 
     def format_final_output(state: AgentState):
-        # In a real scenario, this node would enforce strict JSON formatting
-        # mapping the LLM's understanding into current_form_state.
-        # For demonstration, we'll dummy some state extraction if there are tool calls.
         messages = state["messages"]
-        last_ai_msg = [m for m in messages if isinstance(m, AIMessage)]
-        if last_ai_msg:
-            # We mock the structured output extraction
-            state["suggested_follow_ups"] = [
-                "+ Schedule follow-up meeting in 2 weeks",
-                "+ Send additional clinical data"
-            ]
-            # Mock sentiment extraction
-            text_content = str(last_ai_msg[-1].content).lower()
-            if "positive" in text_content or "great" in text_content:
-                state["current_form_state"]["sentiment"] = "Positive"
-            elif "negative" in text_content or "bad" in text_content:
-                state["current_form_state"]["sentiment"] = "Negative"
+        print("MESSAGES TYPE AND CONTENT:", type(messages), messages)
+        
+        # Build conversation history for extraction
+        convo_history = []
+        for m in messages:
+            if hasattr(m, 'type'):
+                content = m.content
+                if m.type == 'ai' and getattr(m, 'tool_calls', None):
+                    content += " [Tool calls: " + str(m.tool_calls) + "]"
+                convo_history.append(f"{m.type.upper()}: {content}")
+            elif isinstance(m, dict):
+                convo_history.append(f"{m.get('type', 'UNKNOWN').upper()}: {m.get('content', '')}")
             else:
-                state["current_form_state"]["sentiment"] = "Neutral"
+                convo_history.append(f"{type(m).__name__.upper()}: {getattr(m, 'content', str(m))}")
                 
-            state["current_form_state"]["outcomes"] = "Discussed new product features."
+        conversation_text = "\n".join(convo_history)
+        print("CONVERSATION TEXT:", conversation_text)
+        
+        # Use LLM to extract the information into the schema
+        extractor = llm.with_structured_output(schemas.InteractionBase)
+        
+        prompt = f"""You are an AI assistant. Extract the details from the full conversation history below and update the current CRM form state.
+        Current State: {state.get('current_form_state', {})}
+        
+        Conversation History:
+        {conversation_text}
+        
+        Output ONLY the fields that need to be updated based on the Conversation. If a field is not mentioned, leave it null/empty.
+        For sentiment, use exactly 'Positive', 'Neutral', or 'Negative'.
+        """
+        
+        try:
+            print("Extracting with prompt:", prompt)
+            extracted_update = extractor.invoke(prompt)
+            print("Extracted update:", extracted_update.model_dump())
+            # Merge the updates into the state
+            for key, value in extracted_update.model_dump(exclude_unset=True, exclude_none=True).items():
+                if value and str(value).strip():
+                    state["current_form_state"][key] = value
+        except Exception as e:
+            print("Extraction error:", e)
+            
+        # Suggested follow ups
+        state["suggested_follow_ups"] = [
+            "+ Schedule follow-up meeting in 2 weeks",
+            "+ Log a task to verify sample delivery"
+        ]
+        
         return state
 
     graph_builder = StateGraph(AgentState)
@@ -114,6 +148,8 @@ def create_agent():
     
     graph_builder.add_edge(START, "chatbot")
     graph_builder.add_conditional_edges("chatbot", should_continue, {"tools": "tools", END: "format"})
+    # Re-enable standard ReAct loop: let tools return to chatbot so AI can observe output.
+    # We rely on recursion_limit=4 and should_continue to prevent infinite looping.
     graph_builder.add_edge("tools", "chatbot")
     graph_builder.add_edge("format", END)
 
@@ -121,14 +157,17 @@ def create_agent():
 
 graph = create_agent()
 
+from langchain_core.messages import SystemMessage
+
 def run_agent(message: str, current_form_state: dict):
+    sys_msg = SystemMessage(content="You are an AI assistant for a CRM HCP module. Use tools like fetch_hcp_profile to look up restrictions. Use log_interaction to update the form based on user input. Use check_compliance_limits for sample drops. If no tools are needed, answer the user directly.")
     state = AgentState(
-        messages=[HumanMessage(content=message)],
+        messages=[sys_msg, HumanMessage(content=message)],
         current_form_state=current_form_state,
         missing_fields=[],
         suggested_follow_ups=[]
     )
-    result = graph.invoke(state)
+    result = graph.invoke(state, {"recursion_limit": 4})
     return {
         "updated_form_state": result["current_form_state"],
         "suggested_follow_ups": result["suggested_follow_ups"]
