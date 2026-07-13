@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from '../store';
 import { updateField, updateFromAI, addFollowUp } from '../features/interactionSlice';
@@ -10,6 +10,46 @@ export default function InteractionLog() {
   const [chatInput, setChatInput] = useState('');
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [complianceWarning, setComplianceWarning] = useState(false);
+  
+  // Ref to prevent sending fetch profile on initial load
+  const isFirstRender = useRef(true);
+
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    // Proactive trigger for HCP Name change
+    if (formState.hcp_name && formState.hcp_name.length > 3) {
+      // Small debounce
+      const timeoutId = setTimeout(() => {
+        handleSystemTrigger(`User selected ${formState.hcp_name}. Fetch their profile.`);
+      }, 1000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [formState.hcp_name]);
+
+  const handleSystemTrigger = async (systemMessage: string) => {
+    setLoading(true);
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+      const response = await fetch(`${apiUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: systemMessage, current_form_state: formState })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.reply_message) {
+          setMessages(prev => [...prev, { role: 'ai', content: data.reply_message }]);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    setLoading(false);
+  };
 
   const handleInputChange = (field: keyof typeof formState, value: string) => {
     dispatch(updateField({ field, value }));
@@ -22,6 +62,7 @@ export default function InteractionLog() {
     setMessages(prev => [...prev, userMessage]);
     setChatInput('');
     setLoading(true);
+    setComplianceWarning(false);
 
     try {
       // Use VITE_API_URL if defined, otherwise fallback to relative or localhost
@@ -37,7 +78,12 @@ export default function InteractionLog() {
         if (data.updated_form_state) {
           dispatch(updateFromAI(data.updated_form_state));
         }
-        setMessages(prev => [...prev, { role: 'ai', content: 'Extracted details from your input and updated the form.' }]);
+        
+        const reply = data.reply_message || 'Extracted details from your input and updated the form.';
+        if (reply.toLowerCase().includes("warning") || reply.toLowerCase().includes("compliance")) {
+          setComplianceWarning(true);
+        }
+        setMessages(prev => [...prev, { role: 'ai', content: reply }]);
       } else {
         setTimeout(() => {
           setMessages(prev => [...prev, { role: 'ai', content: 'Dummy response: Form updated.' }]);
@@ -55,6 +101,11 @@ export default function InteractionLog() {
     }
   };
 
+  const handleSaveInteraction = () => {
+    // Save to backend endpoint logic goes here
+    alert("Interaction Saved Successfully!");
+  };
+
   return (
     <div className="flex gap-4 h-[calc(100vh-80px)] text-sm">
       {/* Left Column: Form (65%) */}
@@ -67,13 +118,16 @@ export default function InteractionLog() {
           <div className="grid grid-cols-2 gap-6">
             <div>
               <label className="block text-gray-700 mb-1.5">HCP Name</label>
-              <input 
-                type="text" 
-                value={formState.hcp_name}
+              <select 
+                value={formState.hcp_name || ""}
                 onChange={(e) => handleInputChange('hcp_name', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:border-blue-500"
-                placeholder="Search or select HCP..."
-              />
+              >
+                <option value="">Select HCP...</option>
+                <option value="Dr. Sarah Jenkins">Dr. Sarah Jenkins</option>
+                <option value="Dr. Robert Smith">Dr. Robert Smith</option>
+                <option value="Dr. Lee">Dr. Lee</option>
+              </select>
             </div>
             <div>
               <label className="block text-gray-700 mb-1.5">Interaction Type</label>
@@ -152,7 +206,11 @@ export default function InteractionLog() {
               <div className="flex justify-between items-start">
                 <div>
                   <h4 className="text-gray-700 mb-2">Materials Shared</h4>
-                  <p className="text-gray-400 italic">No materials added.</p>
+                  {formState.materials_shared ? (
+                    <p className="text-gray-800 text-sm">{formState.materials_shared}</p>
+                  ) : (
+                    <p className="text-gray-400 italic">No materials added.</p>
+                  )}
                 </div>
                 <button className="flex items-center px-3 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-50">
                   <Search className="h-4 w-4 mr-2" /> Search/Add
@@ -160,11 +218,15 @@ export default function InteractionLog() {
               </div>
             </div>
 
-            <div className="border border-gray-200 rounded p-4">
+            <div className={`border rounded p-4 ${complianceWarning ? 'border-red-500 bg-red-50' : 'border-gray-200'}`}>
               <div className="flex justify-between items-start">
                 <div>
                   <h4 className="text-gray-700 mb-2">Samples Distributed</h4>
-                  <p className="text-gray-400 italic">No samples added.</p>
+                  {formState.samples_distributed ? (
+                    <p className="text-gray-800 text-sm">{formState.samples_distributed}</p>
+                  ) : (
+                    <p className="text-gray-400 italic">No samples added.</p>
+                  )}
                 </div>
                 <button className="flex items-center px-3 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-50">
                   <Search className="h-4 w-4 mr-2" /> Add Sample
@@ -252,6 +314,15 @@ export default function InteractionLog() {
                 ))}
               </div>
             </div>
+          </div>
+          
+          <div className="pt-4 flex justify-end">
+             <button 
+               onClick={handleSaveInteraction}
+               className="px-6 py-2 bg-blue-600 text-white rounded font-medium hover:bg-blue-700 focus:outline-none"
+             >
+               Save Interaction
+             </button>
           </div>
 
         </div>

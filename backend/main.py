@@ -45,7 +45,8 @@ def process_chat(chat_req: schemas.ChatRequest):
     
     return schemas.ChatResponse(
         updated_form_state=result["updated_form_state"],
-        suggested_follow_ups=result["suggested_follow_ups"]
+        suggested_follow_ups=result["suggested_follow_ups"],
+        reply_message=result.get("reply_message")
     )
 
 @app.get("/api/hcp/{hcp_id}", response_model=schemas.HCPProfileResponse)

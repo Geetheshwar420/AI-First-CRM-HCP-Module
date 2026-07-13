@@ -32,16 +32,21 @@ def edit_interaction(field_name: str, new_value: str) -> str:
     return "Updated field " + field_name + " to " + new_value
 
 @tool
-def fetch_hcp_profile(hcp_id: int) -> str:
-    """Dummy function returning HCP rules (e.g., sample limits)."""
+def fetch_hcp_profile(hcp_name: str) -> str:
+    """Retrieves HCP context and rules (e.g., preferences, sample limits) given their name."""
+    # Dummy mock for UAT Scenario
+    if "smith" in hcp_name.lower():
+        return json.dumps({"specialty": "Oncologist", "preferred_brand": "OncoBoost", "sample_restrictions": "Strict no-sample policy"})
+    elif "lee" in hcp_name.lower():
+        return json.dumps({"preferred_brand": "Drug A and Drug C", "specialty": "General Practice"})
     return json.dumps({"preferred_brand": "BrandX", "sample_restrictions": "Max 5 samples per visit"})
 
 @tool
-def check_compliance_limits(samples_requested: int, hcp_id: int) -> str:
+def check_compliance_limits(samples_requested: int, hcp_id: Optional[int] = None) -> str:
     """Validates if the requested sample drop exceeds legal limits."""
-    # Dummy check
+    # Dummy check for UAT Scenario
     if samples_requested > 5:
-        return "Warning: Requested samples exceed the compliance limit of 5."
+        return f"Warning: You cannot leave {samples_requested} samples. The legal monthly limit is 5. Please adjust the quantity."
     return "Compliance check passed."
 
 @tool
@@ -160,15 +165,31 @@ graph = create_agent()
 from langchain_core.messages import SystemMessage
 
 def run_agent(message: str, current_form_state: dict):
-    sys_msg = SystemMessage(content="You are an AI assistant for a CRM HCP module. Use tools like fetch_hcp_profile to look up restrictions. Use log_interaction to update the form based on user input. Use check_compliance_limits for sample drops. If no tools are needed, answer the user directly.")
+    sys_prompt = (
+        "You are an AI assistant for a CRM HCP module. Follow these rules STRICTLY:\n"
+        "1. If the user is logging an interaction but omits the HCP Name, do NOT extract the data yet. Ask 'Who did you meet with?'.\n"
+        "2. Answer questions about HCP preferences by using fetch_hcp_profile.\n"
+        "3. If samples are dropped, use check_compliance_limits. If it returns a warning, relay that warning to the user.\n"
+        "4. Extract follow-up intents and dates using generate_follow_up_suggestions.\n"
+        "5. If no tools are needed, answer the user directly."
+    )
+    sys_msg = SystemMessage(content=sys_prompt)
     state = AgentState(
         messages=[sys_msg, HumanMessage(content=message)],
         current_form_state=current_form_state,
         missing_fields=[],
         suggested_follow_ups=[]
     )
-    result = graph.invoke(state, {"recursion_limit": 4})
+    result = graph.invoke(state, {"recursion_limit": 10})
+    
+    reply_message = "Interaction processed."
+    for m in reversed(result["messages"]):
+        if hasattr(m, 'type') and m.type == 'ai' and not getattr(m, 'tool_calls', None) and m.content:
+            reply_message = m.content
+            break
+
     return {
-        "updated_form_state": result["current_form_state"],
-        "suggested_follow_ups": result["suggested_follow_ups"]
+        "updated_form_state": result.get("current_form_state", {}),
+        "suggested_follow_ups": result.get("suggested_follow_ups", []),
+        "reply_message": reply_message
     }

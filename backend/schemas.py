@@ -40,3 +40,4 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     updated_form_state: InteractionBase
     suggested_follow_ups: List[str]
+    reply_message: Optional[str] = None
