@@ -51,6 +51,95 @@ The backend includes a highly rigorous integration suite (`langgraph_agent_integ
 * **Compliance Blocking:** Simulates limit violations to ensure the LangGraph `check_compliance_limits` tool accurately overrides the AI's intent to distribute excessive samples.
 * **Guardrail Enforcement:** Verifies the AI proactively prompts the user for missing mandatory fields (like HCP Name) before triggering interaction logs.
 
+
+## SETUP GUIDE
+
+
+* 1. Navigate to the backend directory:
+   
+```bash
+   cd backend
+   
+
+```
+
+2. Create and activate a virtual environment:
+
+```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+   
+
+```
+
+3. Install dependencies:
+
+```bash
+   pip install -r requirements.txt
+   
+
+```
+
+4. Configure Environment Variables:
+Create a `.env` file in the `backend` root and add your keys:
+
+```env
+   GROQ_API_KEY=your_groq_api_key_here
+   DATABASE_URL=postgresql://user:password@localhost/crm_db 
+   # or mysql+pymysql://user:password@localhost/crm_db
+   
+
+```
+
+5. Run Database Migrations:
+
+```bash
+   alembic upgrade head
+```
+
+6. Start the FastAPI server:
+
+```bash
+   uvicorn app.main:app --reload --port 8000
+   
+
+```
+
+### Frontend Setup (React)
+
+1. Navigate to the frontend directory:
+
+```bash
+   cd frontend
+   
+
+```
+
+2. Install dependencies:
+
+```bash
+   npm install
+   
+
+```
+
+3. Configure Environment Variables:
+Create a `.env` file in the `frontend` root:
+
+```env
+   REACT_APP_API_URL=http://localhost:8000/api
+   
+
+```
+
+4. Start the React development server:
+
+```bash
+   npm start
+   
+
+```
+
 ## 📝 License
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
