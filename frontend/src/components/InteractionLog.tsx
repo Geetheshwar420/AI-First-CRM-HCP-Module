@@ -37,7 +37,7 @@ export default function InteractionLog() {
       const response = await fetch(`${apiUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: systemMessage, current_form_state: formState })
+        body: JSON.stringify({ message: systemMessage, current_form_state: formState, chat_history: messages })
       });
       if (response.ok) {
         const data = await response.json();
@@ -70,7 +70,7 @@ export default function InteractionLog() {
       const response = await fetch(`${apiUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage.content, current_form_state: formState })
+        body: JSON.stringify({ message: userMessage.content, current_form_state: formState, chat_history: messages })
       });
       
       if (response.ok) {

@@ -8,9 +8,14 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
 
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langgraph.checkpoint.memory import MemorySaver
+
+memory = MemorySaver()
+
 from langgraph.graph.message import add_messages
 
-# Load environment variable explicitly or let LangChain handle it if GROQ_API_KEY is in env
+# Ensure we have required environment variable explicitly or let LangChain handle it if GROQ_API_KEY is in env
 groq_api_key = os.environ.get("GROQ_API_KEY", "")
 
 # Define State
@@ -142,8 +147,8 @@ def create_agent():
     if not os.environ.get("GROQ_API_KEY"):
         raise ValueError("GROQ_API_KEY environment variable is missing. Please configure it.")
         
-    # Target model: llama-3.3-70b-versatile
-    llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+    # Target model: llama-3.1-8b-instant (to avoid rate limits during testing)
+    llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
         
     llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=False)
 
@@ -160,8 +165,10 @@ def create_agent():
         messages = state["messages"]
         last_message = messages[-1]
         
-        # Safeguard: if there are more than 6 messages, force an end to prevent infinite loops (API cost saving)
-        if len(messages) > 6:
+        # Safeguard: if the agent loops more than 5 times on the current query, force an end
+        # Since each tool cycle adds 2 messages (AIMessage with tool_call, ToolMessage), + 1 for final AIMessage
+        # We cap it at 30 messages total to be safe.
+        if len(messages) > 30:
             return END
             
         if last_message.tool_calls:
@@ -223,40 +230,53 @@ def create_agent():
     graph_builder.add_edge("tools", "chatbot")
     graph_builder.add_edge("format", END)
 
-    return graph_builder.compile()
+    return graph_builder.compile(checkpointer=memory)
 
 graph = create_agent()
 
-from langchain_core.messages import SystemMessage
-
-def run_agent(message: str, current_form_state: dict):
+def run_agent(message: str, current_form_state: dict, chat_history: list = None):
+    # Instead of injecting history manually and breaking tool_call references,
+    # we just pass the new message to the graph with a static thread_id.
     sys_prompt = (
         "You are an AI assistant for a CRM HCP module. Follow these rules STRICTLY:\n"
         "1. If the user is logging an interaction but omits the HCP Name, do NOT extract the data yet. Ask 'Who did you meet with?'.\n"
         "2. Answer questions about HCP preferences by using fetch_hcp_profile.\n"
-        "3. If PHYSICAL SAMPLES are distributed, use check_compliance_limits. Do NOT use this for emails or PDFs.\n"
-        "4. Extract follow-up intents and dates using generate_follow_up_suggestions.\n"
-        "5. If the user provides interaction details (topics, sentiment, materials, samples), use log_interaction to log them.\n"
+        "3. If PHYSICAL SAMPLES are distributed, use check_compliance_limits. You MUST inform the user of the compliance result.\n"
+        "4. When the user asks to wrap up, summarize, or generate next steps, use generate_follow_up_suggestions.\n"
+        "5. If the user provides interaction details (topics, sentiment, materials), use log_interaction to log them.\n"
         "6. If the user corrects previously provided details, use edit_interaction to update them.\n"
-        "7. If no tools are needed, answer the user directly. CALL ONLY ONE TOOL AT A TIME."
+        "7. CALL ONLY ONE TOOL AT A TIME. After a tool returns, formulate a clear, natural language reply to the user explaining the tool's outcome. Do not call another tool unless explicitly requested."
     )
-    sys_msg = SystemMessage(content=sys_prompt)
-    state = AgentState(
-        messages=[sys_msg, HumanMessage(content=message)],
-        current_form_state=current_form_state,
-        missing_fields=[],
-        suggested_follow_ups=[]
-    )
-    result = graph.invoke(state, {"recursion_limit": 10})
     
-    reply_message = "Interaction processed."
+    # We fetch the current state to see if it's a new thread
+    config = {"configurable": {"thread_id": "demo_user_1"}}
+    
+    # Check if this thread already has messages
+    current_state = graph.get_state(config)
+    
+    messages_list = []
+    if not current_state.values.get("messages"):
+        messages_list.append(SystemMessage(content=sys_prompt))
+        
+    messages_list.append(HumanMessage(content=message))
+    
+    # Update the form state dynamically from the frontend
+    # Since form state can be edited manually in the UI, we override it on each turn.
+    state_input = {
+        "messages": messages_list,
+        "current_form_state": current_form_state
+    }
+    
+    result = graph.invoke(state_input, config)
+    
+    reply_text = ""
     for m in reversed(result["messages"]):
-        if hasattr(m, 'type') and m.type == 'ai' and not getattr(m, 'tool_calls', None) and m.content:
-            reply_message = m.content
+        if m.type == 'ai' and m.content:
+            reply_text = m.content
             break
-
+    
     return {
         "updated_form_state": result.get("current_form_state", {}),
         "suggested_follow_ups": result.get("suggested_follow_ups", []),
-        "reply_message": reply_message
+        "reply_message": reply_text
     }

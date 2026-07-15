@@ -33,9 +33,14 @@ class HCPProfileResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
 class ChatRequest(BaseModel):
     message: str
     current_form_state: InteractionBase
+    chat_history: Optional[List[ChatMessage]] = None
     
 class ChatResponse(BaseModel):
     updated_form_state: InteractionBase

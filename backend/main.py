@@ -40,8 +40,8 @@ def create_interaction(interaction: schemas.InteractionCreate, db: Session = Dep
 
 @app.post("/api/chat", response_model=schemas.ChatResponse)
 def process_chat(chat_req: schemas.ChatRequest):
-    # Call the LangGraph agent
-    result = agent.run_agent(chat_req.message, chat_req.current_form_state.model_dump())
+    chat_history = [msg.model_dump() for msg in chat_req.chat_history] if chat_req.chat_history else []
+    result = agent.run_agent(chat_req.message, chat_req.current_form_state.model_dump(), chat_history)
     
     return schemas.ChatResponse(
         updated_form_state=result["updated_form_state"],
